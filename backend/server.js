@@ -14,12 +14,41 @@ const PORT = process.env.PORT || 5001;
 
 // Middleware
 app.use(helmet()); // Security headers
+
+// Enhanced CORS configuration
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  "https://fakeit-iota.vercel.app", // Your Vercel domain
+  "http://localhost:3000", // Local development
+  "http://localhost:3001", // Alternative local port
+];
+
+// Remove undefined origins
+const validOrigins = allowedOrigins.filter((origin) => origin);
+
+console.log("🌐 Allowed CORS origins:", validOrigins);
+
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+
+      if (validOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        console.log("🚫 CORS blocked origin:", origin);
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
   })
 );
+
+// Handle preflight requests
+app.options("*", cors());
 app.use(morgan("combined")); // Logging
 app.use(express.json()); // Parse JSON bodies
 app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
