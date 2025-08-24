@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const pool = require("../config/database");
 
 // Health check endpoint
 router.get("/health", (req, res) => {
@@ -39,49 +40,68 @@ router.get("/users", (req, res) => {
 });
 
 // Room management endpoints
-router.post("/rooms", (req, res) => {
+router.post("/rooms", async (req, res) => {
   const { playerName } = req.body;
 
   if (!playerName || !playerName.trim()) {
     return res.status(400).json({ error: "Player name is required" });
   }
 
-  // Generate a random 6-digit room code
-  const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
+  try {
+    // Generate a random 6-digit room code
+    const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
 
-  // In a real app, you'd store this in a database
-  // For now, we'll use a simple in-memory store
-  if (!global.rooms) global.rooms = {};
+    // Create room in database
+    const roomResult = await pool.query(
+      "INSERT INTO rooms (code) VALUES ($1) RETURNING id, code",
+      [roomCode]
+    );
 
-  global.rooms[roomCode] = {
-    code: roomCode,
-    players: [{ id: 1, name: playerName.trim(), isHost: true }],
-    createdAt: new Date().toISOString(),
-    started: false,
-  };
+    const roomId = roomResult.rows[0].id;
 
-  res.json({
-    success: true,
-    roomCode: roomCode,
-    message: "Room created successfully",
-  });
+    // Add first player as host
+    await pool.query(
+      "INSERT INTO players (room_id, name, is_host) VALUES ($1, $2, $3)",
+      [roomId, playerName.trim(), true]
+    );
+
+    res.json({
+      success: true,
+      roomCode: roomCode,
+      message: "Room created successfully",
+    });
+  } catch (error) {
+    console.error("Error creating room:", error);
+    res.status(500).json({ error: "Failed to create room" });
+  }
 });
 
-router.get("/rooms/:code/validate", (req, res) => {
+router.get("/rooms/:code/validate", async (req, res) => {
   const { code } = req.params;
 
-  if (!global.rooms || !global.rooms[code]) {
-    return res.json({ valid: false, message: "Room not found" });
-  }
+  try {
+    const result = await pool.query(
+      "SELECT r.*, COUNT(p.id) as player_count FROM rooms r LEFT JOIN players p ON r.id = p.room_id WHERE r.code = $1 GROUP BY r.id",
+      [code]
+    );
 
-  res.json({
-    valid: true,
-    message: "Room exists",
-    playerCount: global.rooms[code].players.length,
-  });
+    if (result.rows.length === 0) {
+      return res.json({ valid: false, message: "Room not found" });
+    }
+
+    const room = result.rows[0];
+    res.json({
+      valid: true,
+      message: "Room exists",
+      playerCount: parseInt(room.player_count),
+    });
+  } catch (error) {
+    console.error("Error validating room:", error);
+    res.status(500).json({ error: "Failed to validate room" });
+  }
 });
 
-router.post("/rooms/join", (req, res) => {
+router.post("/rooms/join", async (req, res) => {
   const { roomCode, playerName } = req.body;
 
   if (!roomCode || !playerName || !playerName.trim()) {
@@ -90,45 +110,87 @@ router.post("/rooms/join", (req, res) => {
       .json({ error: "Room code and player name are required" });
   }
 
-  if (!global.rooms || !global.rooms[roomCode]) {
-    return res.status(404).json({ error: "Room not found" });
+  try {
+    // Get room details
+    const roomResult = await pool.query(
+      "SELECT * FROM rooms WHERE code = $1",
+      [roomCode]
+    );
+
+    if (roomResult.rows.length === 0) {
+      return res.status(404).json({ error: "Room not found" });
+    }
+
+    const room = roomResult.rows[0];
+
+    // Check if room is full or already started
+    if (room.started) {
+      return res.status(400).json({ error: "Game has already started" });
+    }
+
+    // Count current players
+    const playerCountResult = await pool.query(
+      "SELECT COUNT(*) FROM players WHERE room_id = $1",
+      [room.id]
+    );
+
+    if (parseInt(playerCountResult.rows[0].count) >= 8) {
+      return res.status(400).json({ error: "Room is full" });
+    }
+
+    // Check if player name already exists in the room
+    const existingPlayerResult = await pool.query(
+      "SELECT id FROM players WHERE room_id = $1 AND LOWER(name) = LOWER($2)",
+      [room.id, playerName.trim()]
+    );
+
+    if (existingPlayerResult.rows.length > 0) {
+      return res
+        .status(400)
+        .json({ error: "Player name already exists in this room" });
+    }
+
+    // Add player to room
+    await pool.query(
+      "INSERT INTO players (room_id, name, is_host) VALUES ($1, $2, $3)",
+      [room.id, playerName.trim(), false]
+    );
+
+    // Get all players in the room
+    const playersResult = await pool.query(
+      "SELECT id, name, is_host FROM players WHERE room_id = $1 ORDER BY joined_at",
+      [room.id]
+    );
+
+    res.json({
+      success: true,
+      message: "Joined room successfully",
+      players: playersResult.rows,
+    });
+  } catch (error) {
+    console.error("Error joining room:", error);
+    res.status(500).json({ error: "Failed to join room" });
   }
+});
 
-  const room = global.rooms[roomCode];
+// Get players in a room
+router.get("/rooms/:code/players", async (req, res) => {
+  const { code } = req.params;
 
-  // Check if room is full or already started
-  if (room.started) {
-    return res.status(400).json({ error: "Game has already started" });
+  try {
+    const result = await pool.query(
+      "SELECT p.id, p.name, p.is_host FROM players p JOIN rooms r ON p.room_id = r.id WHERE r.code = $1 ORDER BY p.joined_at",
+      [code]
+    );
+
+    res.json({
+      success: true,
+      players: result.rows,
+    });
+  } catch (error) {
+    console.error("Error getting players:", error);
+    res.status(500).json({ error: "Failed to get players" });
   }
-
-  if (room.players.length >= 8) {
-    return res.status(400).json({ error: "Room is full" });
-  }
-
-  // Check if player name already exists in the room
-  const existingPlayer = room.players.find(
-    (p) => p.name.toLowerCase() === playerName.trim().toLowerCase()
-  );
-  if (existingPlayer) {
-    return res
-      .status(400)
-      .json({ error: "Player name already exists in this room" });
-  }
-
-  // Add player to room
-  const newPlayer = {
-    id: room.players.length + 1,
-    name: playerName.trim(),
-    isHost: false,
-  };
-
-  room.players.push(newPlayer);
-
-  res.json({
-    success: true,
-    message: "Joined room successfully",
-    players: room.players,
-  });
 });
 
 module.exports = router;
