@@ -17,15 +17,15 @@ Your backend is now configured with a PostgreSQL database hosted on Neon. The co
 
    - Click "New +" → "Web Service"
    - Connect your GitHub repository (or create one first)
-   - Select the `backend` folder
+   - **Important**: Select the **root** of your repository (not the backend folder)
 
 2. **Configure Service**
 
    - **Name**: `fakeit-backend`
    - **Environment**: `Node`
-   - **Root Directory**: `backend` (important!)
-   - **Build Command**: `npm install`
-   - **Start Command**: `npm start`
+   - **Root Directory**: `backend` (this will be set automatically by render.yaml)
+   - **Build Command**: `npm install` (auto-configured)
+   - **Start Command**: `node index.js` (auto-configured)
    - **Plan**: Free
 
 3. **Environment Variables**
@@ -42,9 +42,11 @@ Your backend is now configured with a PostgreSQL database hosted on Neon. The co
    - Wait for build and deployment
    - Note your backend URL (e.g., `https://fakeit-backend.onrender.com`)
 
-### ⚠️ Important: Root Directory Setting
+### ⚠️ Important: Repository Selection
 
-Make sure to set the **Root Directory** to `backend` in Render. This ensures the build process runs from the correct folder and uses npm instead of yarn.
+- **Select the root of your repository** (the main fakeit folder)
+- **DO NOT select the backend subfolder**
+- The `render.yaml` file will automatically configure the backend directory and build process
 
 ## Frontend Deployment to Vercel
 
@@ -101,7 +103,7 @@ FRONTEND_URL=https://your-frontend-url.vercel.app
 - **Build Failures**: Check package.json scripts and dependencies
 - **API Errors**: Verify environment variables and API endpoints
 - **Database Issues**: Check `DATABASE_URL` and database logs in Render
-- **Yarn Workspace Errors**: Ensure Root Directory is set to `backend` in Render
+- **Module Not Found**: Ensure you're selecting the root repository, not the backend subfolder
 
 ## URLs to Remember
 
