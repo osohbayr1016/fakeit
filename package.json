@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "./start-dev.sh",
     "start": "cd backend && npm start",
+    "start:backend": "cd backend && npm start",
     "build": "cd frontend && npm run build",
     "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
     "backend": "cd backend && npm run dev",

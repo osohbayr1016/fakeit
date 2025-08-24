@@ -24,15 +24,29 @@ app.use(morgan("combined")); // Logging
 app.use(express.json()); // Parse JSON bodies
 app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
 
-// Initialize database
+// Initialize database with graceful fallback
+let dbInitialized = false;
 initializeDatabase()
   .then(() => {
     console.log("✅ Database initialized successfully");
+    dbInitialized = true;
   })
   .catch((error) => {
     console.error("❌ Database initialization failed:", error);
-    process.exit(1);
+    console.log("⚠️  Server will continue without database functionality");
+    console.log("🔗 Some API endpoints may not work properly");
+    dbInitialized = false;
   });
+
+// Add database status to health check
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "OK",
+    message: "Backend server is running",
+    timestamp: new Date().toISOString(),
+    database: dbInitialized ? "connected" : "disconnected",
+  });
+});
 
 // Routes
 app.use("/api", apiRoutes);
@@ -54,5 +68,9 @@ app.listen(PORT, () => {
     `📱 Frontend URL: ${process.env.FRONTEND_URL || "http://localhost:3000"}`
   );
   console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
-  console.log(`🗄️  Database: PostgreSQL (Neon)`);
+  console.log(
+    `🗄️  Database: ${
+      dbInitialized ? "PostgreSQL (Connected)" : "PostgreSQL (Disconnected)"
+    }`
+  );
 });

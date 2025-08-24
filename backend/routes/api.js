@@ -2,15 +2,6 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../config/database");
 
-// Health check endpoint
-router.get("/health", (req, res) => {
-  res.json({
-    status: "OK",
-    message: "Backend server is running",
-    timestamp: new Date().toISOString(),
-  });
-});
-
 // Sample API endpoints
 router.get("/hello", (req, res) => {
   res.json({
