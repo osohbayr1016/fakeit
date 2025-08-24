@@ -112,10 +112,9 @@ router.post("/rooms/join", async (req, res) => {
 
   try {
     // Get room details
-    const roomResult = await pool.query(
-      "SELECT * FROM rooms WHERE code = $1",
-      [roomCode]
-    );
+    const roomResult = await pool.query("SELECT * FROM rooms WHERE code = $1", [
+      roomCode,
+    ]);
 
     if (roomResult.rows.length === 0) {
       return res.status(404).json({ error: "Room not found" });
