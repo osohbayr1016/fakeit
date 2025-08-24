@@ -32,15 +32,19 @@ router.get("/users", (req, res) => {
 
 // Room management endpoints
 router.post("/rooms", async (req, res) => {
+  console.log("🚀 POST /rooms called with body:", req.body);
+
   const { playerName } = req.body;
 
   if (!playerName || !playerName.trim()) {
+    console.log("❌ Missing player name");
     return res.status(400).json({ error: "Player name is required" });
   }
 
   try {
     // Generate a random 6-digit room code
     const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
+    console.log("🎲 Generated room code:", roomCode);
 
     // Create room in database
     const roomResult = await pool.query(
@@ -49,6 +53,7 @@ router.post("/rooms", async (req, res) => {
     );
 
     const roomId = roomResult.rows[0].id;
+    console.log("✅ Room created with ID:", roomId);
 
     // Add first player as host
     await pool.query(
@@ -56,17 +61,108 @@ router.post("/rooms", async (req, res) => {
       [roomId, playerName.trim(), true]
     );
 
+    console.log("✅ Player added as host:", playerName);
+
     res.json({
       success: true,
       roomCode: roomCode,
       message: "Room created successfully",
     });
   } catch (error) {
-    console.error("Error creating room:", error);
-    res.status(500).json({ error: "Failed to create room" });
+    console.error("❌ Error creating room:", error);
+    res
+      .status(500)
+      .json({ error: "Failed to create room", details: error.message });
   }
 });
 
+// IMPORTANT: Put specific routes BEFORE parameterized routes
+router.post("/rooms/join", async (req, res) => {
+  console.log("🚀 POST /rooms/join called with body:", req.body);
+
+  const { roomCode, playerName } = req.body;
+
+  if (!roomCode || !playerName || !playerName.trim()) {
+    console.log("❌ Missing room code or player name");
+    return res
+      .status(400)
+      .json({ error: "Room code and player name are required" });
+  }
+
+  try {
+    console.log("🔍 Looking for room with code:", roomCode);
+
+    // Get room details
+    const roomResult = await pool.query("SELECT * FROM rooms WHERE code = $1", [
+      roomCode,
+    ]);
+
+    if (roomResult.rows.length === 0) {
+      console.log("❌ Room not found:", roomCode);
+      return res.status(404).json({ error: "Room not found" });
+    }
+
+    const room = roomResult.rows[0];
+    console.log("✅ Room found:", room.id);
+
+    // Check if room is full or already started
+    if (room.started) {
+      console.log("❌ Game already started in room:", roomCode);
+      return res.status(400).json({ error: "Game has already started" });
+    }
+
+    // Count current players
+    const playerCountResult = await pool.query(
+      "SELECT COUNT(*) FROM players WHERE room_id = $1",
+      [room.id]
+    );
+
+    if (parseInt(playerCountResult.rows[0].count) >= 8) {
+      console.log("❌ Room is full:", roomCode);
+      return res.status(400).json({ error: "Room is full" });
+    }
+
+    // Check if player name already exists in the room
+    const existingPlayerResult = await pool.query(
+      "SELECT id FROM players WHERE room_id = $1 AND LOWER(name) = LOWER($2)",
+      [room.id, playerName.trim()]
+    );
+
+    if (existingPlayerResult.rows.length > 0) {
+      console.log("❌ Player name already exists:", playerName);
+      return res
+        .status(400)
+        .json({ error: "Player name already exists in this room" });
+    }
+
+    // Add player to room
+    await pool.query(
+      "INSERT INTO players (room_id, name, is_host) VALUES ($1, $2, $3)",
+      [room.id, playerName.trim(), false]
+    );
+
+    console.log("✅ Player added to room:", playerName);
+
+    // Get all players in the room
+    const playersResult = await pool.query(
+      "SELECT id, name, is_host FROM players WHERE room_id = $1 ORDER BY joined_at",
+      [room.id]
+    );
+
+    res.json({
+      success: true,
+      message: "Joined room successfully",
+      players: playersResult.rows,
+    });
+  } catch (error) {
+    console.error("❌ Error joining room:", error);
+    res
+      .status(500)
+      .json({ error: "Failed to join room", details: error.message });
+  }
+});
+
+// Parameterized routes come AFTER specific routes
 router.get("/rooms/:code/validate", async (req, res) => {
   const { code } = req.params;
 
@@ -89,77 +185,6 @@ router.get("/rooms/:code/validate", async (req, res) => {
   } catch (error) {
     console.error("Error validating room:", error);
     res.status(500).json({ error: "Failed to validate room" });
-  }
-});
-
-router.post("/rooms/join", async (req, res) => {
-  const { roomCode, playerName } = req.body;
-
-  if (!roomCode || !playerName || !playerName.trim()) {
-    return res
-      .status(400)
-      .json({ error: "Room code and player name are required" });
-  }
-
-  try {
-    // Get room details
-    const roomResult = await pool.query("SELECT * FROM rooms WHERE code = $1", [
-      roomCode,
-    ]);
-
-    if (roomResult.rows.length === 0) {
-      return res.status(404).json({ error: "Room not found" });
-    }
-
-    const room = roomResult.rows[0];
-
-    // Check if room is full or already started
-    if (room.started) {
-      return res.status(400).json({ error: "Game has already started" });
-    }
-
-    // Count current players
-    const playerCountResult = await pool.query(
-      "SELECT COUNT(*) FROM players WHERE room_id = $1",
-      [room.id]
-    );
-
-    if (parseInt(playerCountResult.rows[0].count) >= 8) {
-      return res.status(400).json({ error: "Room is full" });
-    }
-
-    // Check if player name already exists in the room
-    const existingPlayerResult = await pool.query(
-      "SELECT id FROM players WHERE room_id = $1 AND LOWER(name) = LOWER($2)",
-      [room.id, playerName.trim()]
-    );
-
-    if (existingPlayerResult.rows.length > 0) {
-      return res
-        .status(400)
-        .json({ error: "Player name already exists in this room" });
-    }
-
-    // Add player to room
-    await pool.query(
-      "INSERT INTO players (room_id, name, is_host) VALUES ($1, $2, $3)",
-      [room.id, playerName.trim(), false]
-    );
-
-    // Get all players in the room
-    const playersResult = await pool.query(
-      "SELECT id, name, is_host FROM players WHERE room_id = $1 ORDER BY joined_at",
-      [room.id]
-    );
-
-    res.json({
-      success: true,
-      message: "Joined room successfully",
-      players: playersResult.rows,
-    });
-  } catch (error) {
-    console.error("Error joining room:", error);
-    res.status(500).json({ error: "Failed to join room" });
   }
 });
 

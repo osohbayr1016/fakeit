@@ -80,11 +80,45 @@ app.get("/api/health", (req, res) => {
 // Routes
 app.use("/api", apiRoutes);
 
+// Debug: Log all registered routes
+console.log("🔗 Registered API routes:");
+app._router.stack.forEach((middleware) => {
+  if (middleware.route) {
+    console.log(
+      `  ${Object.keys(middleware.route.methods).join(",").toUpperCase()} ${
+        middleware.route.path
+      }`
+    );
+  } else if (middleware.name === "router") {
+    middleware.handle.stack.forEach((handler) => {
+      if (handler.route) {
+        console.log(
+          `  ${Object.keys(handler.route.methods)
+            .join(",")
+            .toUpperCase()} /api${handler.route.path}`
+        );
+      }
+    });
+  }
+});
+
 // 404 handler for undefined routes
 app.use("*", (req, res) => {
+  console.log(`🚫 404 - Route not found: ${req.method} ${req.originalUrl}`);
   res.status(404).json({
     error: "Route not found",
     path: req.originalUrl,
+    method: req.method,
+    availableRoutes: [
+      "GET /api/health",
+      "GET /api/hello",
+      "POST /api/data",
+      "GET /api/users",
+      "POST /api/rooms",
+      "GET /api/rooms/:code/validate",
+      "POST /api/rooms/join",
+      "GET /api/rooms/:code/players",
+    ],
   });
 });
 
