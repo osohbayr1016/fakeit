@@ -59,6 +59,9 @@ initializeDatabase()
   .then(() => {
     console.log("✅ Database initialized successfully");
     dbInitialized = true;
+
+    // Start periodic cleanup of stale players
+    startPeriodicCleanup();
   })
   .catch((error) => {
     console.error("❌ Database initialization failed:", error);
@@ -66,6 +69,33 @@ initializeDatabase()
     console.log("🔗 Some API endpoints may not work properly");
     dbInitialized = false;
   });
+
+// Periodic cleanup function to remove stale players
+const startPeriodicCleanup = () => {
+  setInterval(async () => {
+    try {
+      // Remove players who haven't been active in the last 5 minutes
+      const result = await pool.query(
+        "DELETE FROM players WHERE joined_at < NOW() - INTERVAL '5 minutes'"
+      );
+
+      if (result.rowCount > 0) {
+        console.log(`🧹 Cleaned up ${result.rowCount} stale players`);
+      }
+
+      // Remove empty rooms
+      const emptyRooms = await pool.query(
+        "DELETE FROM rooms WHERE id NOT IN (SELECT DISTINCT room_id FROM players)"
+      );
+
+      if (emptyRooms.rowCount > 0) {
+        console.log(`🗑️ Cleaned up ${emptyRooms.rowCount} empty rooms`);
+      }
+    } catch (error) {
+      console.error("❌ Error during cleanup:", error);
+    }
+  }, 60000); // Run every minute
+};
 
 // Add database status to health check
 app.get("/api/health", (req, res) => {

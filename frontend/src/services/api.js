@@ -54,6 +54,13 @@ export const apiService = {
 
   // Validate room code
   validateRoom: (roomCode) => api.get(`/rooms/${roomCode}/validate`),
+
+  // Get players in a room
+  getRoomPlayers: (roomCode) => api.get(`/rooms/${roomCode}/players`),
+
+  // Leave room
+  leaveRoom: (roomCode, playerName) =>
+    api.post("/rooms/leave", { roomCode, playerName }),
 };
 
 export default api;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { apiService } from "../services/api";
 import { useApi } from "../hooks/useApi";
 
@@ -16,6 +16,70 @@ interface GameResult {
   votes: Record<string, number>;
 }
 
+interface ApiPlayer {
+  id: number;
+  name: string;
+  is_host: boolean;
+}
+
+interface PlayersResponse {
+  success: boolean;
+  players: ApiPlayer[];
+}
+
+// Mongolian words for the game
+const MONGOLIAN_WORDS = {
+  animals: ["Чоно", "Бар", "Тэмээ", "Адуу", "Хонь", "Үхэр", "Буга", "Арслан"],
+  foods: [
+    "Бууз",
+    "Хуушуур",
+    "Гурилтай шөл",
+    "Цуйван",
+    "Тараг",
+    "Ааруул",
+    "Айраг",
+    "Өрөм",
+  ],
+  places: [
+    "Улаанбаатар",
+    "Говь",
+    "Хөвсгөл",
+    "Эрдэнэт",
+    "Дархан",
+    "Орхон",
+    "Сэлэнгэ",
+    "Өмнөговь",
+  ],
+  objects: [
+    "Утас",
+    "Компьютер",
+    "Ном",
+    "Цүнх",
+    "Гутал",
+    "Цаг",
+    "Оочир",
+    "Түлхүүр",
+  ],
+};
+
+// Function to get a random word from any category
+const getRandomWord = () => {
+  const categories = Object.values(MONGOLIAN_WORDS);
+  const randomCategory =
+    categories[Math.floor(Math.random() * categories.length)];
+  return randomCategory[Math.floor(Math.random() * randomCategory.length)];
+};
+
+// Function to get the category of a word
+const getWordCategory = (word: string) => {
+  for (const [category, words] of Object.entries(MONGOLIAN_WORDS)) {
+    if (words.includes(word)) {
+      return category;
+    }
+  }
+  return null;
+};
+
 export default function Home() {
   const [gamePhase, setGamePhase] = useState<
     "lobby" | "waiting" | "game" | "clue" | "voting" | "results"
@@ -29,15 +93,86 @@ export default function Home() {
   const [currentTurn, setCurrentTurn] = useState(0);
   const [votes, setVotes] = useState<Record<string, number>>({});
   const [gameResult, setGameResult] = useState<GameResult | null>(null);
+  const [isHost, setIsHost] = useState(false);
+  const [gameMode, setGameMode] = useState<"1-imposter" | "2-imposter">(
+    "1-imposter"
+  );
+  const [playerPollingInterval, setPlayerPollingInterval] =
+    useState<NodeJS.Timeout | null>(null);
 
   const { loading, error, executeApiCall, clearError } = useApi();
+
+  // Function to poll for player updates
+  const startPlayerPolling = (roomCode: string) => {
+    const interval = setInterval(async () => {
+      try {
+        const result = (await apiService.getRoomPlayers(
+          roomCode
+        )) as unknown as PlayersResponse;
+        if (result && result.players) {
+          setPlayers(
+            result.players.map((p: ApiPlayer) => ({
+              id: p.id,
+              name: p.name,
+              isHost: p.is_host,
+            }))
+          );
+
+          // Update host status
+          const currentPlayer = result.players.find(
+            (p: ApiPlayer) => p.name === playerName
+          );
+          setIsHost(currentPlayer?.is_host || false);
+        }
+      } catch (err) {
+        console.error("Failed to update players:", err);
+      }
+    }, 2000); // Poll every 2 seconds
+
+    setPlayerPollingInterval(interval);
+  };
+
+  const stopPlayerPolling = useCallback(() => {
+    if (playerPollingInterval) {
+      clearInterval(playerPollingInterval);
+      setPlayerPollingInterval(null);
+    }
+  }, [playerPollingInterval]);
 
   // No auto-simulation - start in lobby
   useEffect(() => {
     // Initialize empty state
     setGamePhase("lobby");
     setPlayers([]);
-  }, []);
+    setIsHost(false);
+
+    // Cleanup polling on unmount
+    return () => {
+      stopPlayerPolling();
+    };
+  }, [stopPlayerPolling]);
+
+  // Handle page refresh/close
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (roomCode && playerName) {
+        // Try to notify server that player is leaving
+        // This is a best-effort approach since we can't guarantee it will execute
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(
+            `${
+              process.env.NEXT_PUBLIC_API_URL ||
+              "https://fakeit-k1hq.onrender.com/api"
+            }/rooms/leave`,
+            JSON.stringify({ roomCode, playerName })
+          );
+        }
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [roomCode, playerName]);
 
   const createGame = async () => {
     if (!playerName.trim()) return;
@@ -48,7 +183,9 @@ export default function Home() {
       if (result.roomCode) {
         setRoomCode(result.roomCode);
         setPlayers([{ id: 1, name: playerName, isHost: true }]);
+        setIsHost(true);
         setGamePhase("waiting");
+        startPlayerPolling(result.roomCode);
       }
     } catch (err) {
       console.error("Failed to create game:", err);
@@ -76,7 +213,9 @@ export default function Home() {
 
         if (result.success) {
           setPlayers(result.players || []);
+          setIsHost(false);
           setGamePhase("waiting");
+          startPlayerPolling(roomCode);
         }
       } else {
         // Room doesn't exist - show specific error
@@ -90,15 +229,37 @@ export default function Home() {
 
   const startGame = () => {
     setGamePhase("game");
+
+    // Calculate number of imposters based on game mode and player count
+    let numImposters = 1;
+    if (gameMode === "2-imposter" && players.length >= 5) {
+      numImposters = 2;
+    }
+
+    // Select random imposters
+    const allPlayerNames = players.map((p) => p.name);
+    const selectedImposters: string[] = [];
+
+    for (let i = 0; i < numImposters; i++) {
+      const availablePlayers = allPlayerNames.filter(
+        (name) => !selectedImposters.includes(name)
+      );
+      if (availablePlayers.length > 0) {
+        const randomIndex = Math.floor(Math.random() * availablePlayers.length);
+        selectedImposters.push(availablePlayers[randomIndex]);
+      }
+    }
+
+    // Check if current player is imposter
+    const isCurrentPlayerImposter = selectedImposters.includes(playerName);
+    setIsImpostor(isCurrentPlayerImposter);
+
     // Simulate word assignment
     setTimeout(() => {
-      const random = Math.random();
-      if (random < 0.33) {
-        setIsImpostor(true);
+      if (isCurrentPlayerImposter) {
         setSecretWord("IMPOSTER");
       } else {
-        setIsImpostor(false);
-        setSecretWord("Mongolian");
+        setSecretWord(getRandomWord());
       }
       startTimer();
     }, 1000);
@@ -143,6 +304,28 @@ export default function Home() {
     setCurrentTurn(0);
     setVotes({});
     setGameResult(null);
+    setIsHost(false);
+    setGameMode("1-imposter");
+    clearError();
+    stopPlayerPolling();
+  };
+
+  const leaveGame = async () => {
+    // Try to notify server that player is leaving
+    if (roomCode && playerName) {
+      try {
+        await apiService.leaveRoom(roomCode, playerName);
+      } catch (err) {
+        console.error("Failed to notify server about leaving:", err);
+      }
+    }
+
+    stopPlayerPolling();
+    setGamePhase("lobby");
+    setRoomCode("");
+    setPlayers([]);
+    setIsHost(false);
+    setGameMode("1-imposter");
     clearError();
   };
 
@@ -171,6 +354,30 @@ export default function Home() {
                 placeholder="Enter your name"
                 className="w-full px-4 py-3 bg-white/20 border border-white/30 rounded-xl text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent transition-all"
               />
+            </div>
+
+            {/* Word Categories Info */}
+            <div className="bg-white/5 rounded-xl p-4 border border-white/10">
+              <h3 className="text-white/90 text-sm font-medium mb-3 text-center">
+                🎯 Word Categories
+              </h3>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="text-center">
+                  <span className="text-yellow-400">🐾 Animals</span>
+                </div>
+                <div className="text-center">
+                  <span className="text-green-400">🍽️ Foods</span>
+                </div>
+                <div className="text-center">
+                  <span className="text-blue-400">🏔️ Places</span>
+                </div>
+                <div className="text-center">
+                  <span className="text-purple-400">📱 Objects</span>
+                </div>
+              </div>
+              <p className="text-white/60 text-xs text-center mt-2">
+                You&apos;ll get Mongolian words from these categories!
+              </p>
             </div>
 
             {/* Create Game Button */}
@@ -286,9 +493,97 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Word Preview Card */}
+        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20 shadow-2xl mb-6">
+          <h3 className="text-xl font-semibold text-white mb-4 text-center">
+            🎯 Word Categories Preview
+          </h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="text-center">
+              <div className="text-yellow-400 text-2xl mb-2">🐾</div>
+              <div className="text-white/80 text-sm font-medium mb-2">
+                Animals
+              </div>
+              <div className="text-white/60 text-xs">
+                {MONGOLIAN_WORDS.animals[0]}
+              </div>
+            </div>
+            <div className="text-center">
+              <div className="text-green-400 text-2xl mb-2">🍽️</div>
+              <div className="text-white/80 text-sm font-medium mb-2">
+                Foods
+              </div>
+              <div className="text-white/60 text-xs">
+                {MONGOLIAN_WORDS.foods[0]}
+              </div>
+            </div>
+            <div className="text-center">
+              <div className="text-blue-400 text-2xl mb-2">🏔️</div>
+              <div className="text-white/80 text-sm font-medium mb-2">
+                Places
+              </div>
+              <div className="text-white/60 text-xs">
+                {MONGOLIAN_WORDS.places[0]}
+              </div>
+            </div>
+            <div className="text-center">
+              <div className="text-purple-400 text-2xl mb-2">📱</div>
+              <div className="text-white/80 text-sm font-medium mb-2">
+                Objects
+              </div>
+              <div className="text-white/60 text-xs">
+                {MONGOLIAN_WORDS.objects[0]}
+              </div>
+            </div>
+          </div>
+          <p className="text-white/60 text-xs text-center mt-4">
+            You&apos;ll get one of these Mongolian words during the game!
+          </p>
+        </div>
+
         {/* Action Buttons */}
         <div className="text-center space-y-4">
-          {players.length >= 2 && (
+          {/* Game Mode Selection - Only visible to host */}
+          {isHost && players.length >= 2 && (
+            <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20 mb-4">
+              <h3 className="text-white font-semibold mb-4">🎮 Game Mode</h3>
+              <div className="flex justify-center space-x-4">
+                <label className="flex items-center">
+                  <input
+                    type="radio"
+                    value="1-imposter"
+                    checked={gameMode === "1-imposter"}
+                    onChange={(e) =>
+                      setGameMode(e.target.value as "1-imposter" | "2-imposter")
+                    }
+                    className="mr-2"
+                  />
+                  <span className="text-white">1 Imposter</span>
+                </label>
+                <label className="flex items-center">
+                  <input
+                    type="radio"
+                    value="2-imposter"
+                    checked={gameMode === "2-imposter"}
+                    onChange={(e) =>
+                      setGameMode(e.target.value as "1-imposter" | "2-imposter")
+                    }
+                    className="mr-2"
+                    disabled={players.length < 5}
+                  />
+                  <span
+                    className={`${
+                      players.length < 5 ? "text-white/50" : "text-white"
+                    }`}
+                  >
+                    2 Imposters {players.length < 5 && `(Need 5+ players)`}
+                  </span>
+                </label>
+              </div>
+            </div>
+          )}
+
+          {players.length >= 2 && isHost && (
             <button
               onClick={startGame}
               className="px-8 py-4 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold rounded-xl hover:from-purple-600 hover:to-pink-600 transform hover:scale-105 transition-all duration-200 shadow-lg text-lg"
@@ -312,14 +607,17 @@ export default function Home() {
             </div>
           )}
 
+          {!isHost && players.length >= 2 && (
+            <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
+              <p className="text-white/80 text-center">
+                ⏳ Waiting for the host to start the game...
+              </p>
+            </div>
+          )}
+
           {/* Go Back Button */}
           <button
-            onClick={() => {
-              setGamePhase("lobby");
-              setRoomCode("");
-              setPlayers([]);
-              clearError();
-            }}
+            onClick={leaveGame}
             className="px-6 py-3 bg-white/10 text-white/80 font-medium rounded-xl hover:bg-white/20 border border-white/20 transition-all duration-200"
           >
             ← Go Back to Lobby
@@ -338,6 +636,19 @@ export default function Home() {
           <div className="text-6xl font-bold text-yellow-400 mb-6 font-mono tracking-wider">
             {secretWord}
           </div>
+          {secretWord && secretWord !== "IMPOSTER" && (
+            <div className="inline-flex items-center px-6 py-3 bg-green-500/20 border border-green-400/30 rounded-full mb-4">
+              <span className="text-green-300 font-medium text-lg">
+                📚 Category:{" "}
+                {(() => {
+                  const category = getWordCategory(secretWord);
+                  return category
+                    ? category.charAt(0).toUpperCase() + category.slice(1)
+                    : "Unknown";
+                })()}
+              </span>
+            </div>
+          )}
           {isImpostor && (
             <div className="inline-flex items-center px-6 py-3 bg-red-500/20 border border-red-400/30 rounded-full">
               <span className="text-red-300 font-medium text-lg">
@@ -377,6 +688,36 @@ export default function Home() {
           <p className="text-blue-200 text-lg">
             Take turns giving one-sentence clues
           </p>
+        </div>
+
+        {/* Word Reminder Card */}
+        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20 shadow-2xl mb-6">
+          <h3 className="text-xl font-semibold text-white mb-4 text-center">
+            🎯 Your Word
+          </h3>
+          <div className="text-4xl font-bold text-yellow-400 mb-3 font-mono tracking-wider">
+            {secretWord}
+          </div>
+          {secretWord && secretWord !== "IMPOSTER" && (
+            <div className="inline-flex items-center px-4 py-2 bg-green-500/20 border border-green-400/30 rounded-full">
+              <span className="text-green-300 font-medium text-sm">
+                📚 Category:{" "}
+                {(() => {
+                  const category = getWordCategory(secretWord);
+                  return category
+                    ? category.charAt(0).toUpperCase() + category.slice(1)
+                    : "Unknown";
+                })()}
+              </span>
+            </div>
+          )}
+          {isImpostor && (
+            <div className="inline-flex items-center px-4 py-2 bg-red-500/20 border border-red-400/30 rounded-full mt-2">
+              <span className="text-red-300 font-medium text-sm">
+                🎭 You are the IMPOSTER! Make up clues!
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Player Order Card */}
@@ -438,11 +779,12 @@ export default function Home() {
               key={player.id}
               onClick={() => submitVote(player.id)}
               disabled={!!votes[playerName]}
-              className={`w-full p-6 rounded-xl border-2 transition-all transform hover:scale-105 ${
-                votes[playerName] === player.id
-                  ? "bg-gradient-to-r from-red-500/20 to-pink-500/20 border-red-400/50 shadow-lg"
-                  : "bg-white/10 border-white/20 hover:border-blue-400/50 hover:bg-blue-500/10"
-              } disabled:opacity-50 disabled:cursor-not-allowed`}
+              className={`
+                w-full p-6 rounded-xl border-2 transition-all transform hover:scale-105 ${
+                  votes[playerName] === player.id
+                    ? "bg-gradient-to-r from-red-500/20 to-pink-500/20 border-red-400/50 shadow-lg"
+                    : "bg-white/10 border-white/20 hover:border-blue-400/50 hover:bg-blue-500/10"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
             >
               <div className="flex items-center justify-between">
                 <span className="text-white font-medium text-lg">
@@ -461,7 +803,7 @@ export default function Home() {
             <div className="bg-white/10 backdrop-blur-lg rounded-xl p-4 border border-white/20">
               <p className="text-white/80">⏳ Waiting for all votes...</p>
               <div className="mt-2 flex justify-center">
-                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white"></div>
+                <div className="animate-spin rounded-full h-6 h-6 border-b-2 border-white"></div>
               </div>
             </div>
           </div>

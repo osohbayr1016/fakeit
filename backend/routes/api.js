@@ -208,4 +208,61 @@ router.get("/rooms/:code/players", async (req, res) => {
   }
 });
 
+// Leave room endpoint
+router.post("/rooms/leave", async (req, res) => {
+  const { roomCode, playerName } = req.body;
+
+  if (!roomCode || !playerName) {
+    return res
+      .status(400)
+      .json({ error: "Room code and player name are required" });
+  }
+
+  try {
+    console.log("🚪 Player leaving room:", { roomCode, playerName });
+
+    // Get room details
+    const roomResult = await pool.query("SELECT * FROM rooms WHERE code = $1", [
+      roomCode,
+    ]);
+
+    if (roomResult.rows.length === 0) {
+      return res.status(404).json({ error: "Room not found" });
+    }
+
+    const room = roomResult.rows[0];
+
+    // Remove player from room
+    const deleteResult = await pool.query(
+      "DELETE FROM players WHERE room_id = $1 AND name = $2",
+      [room.id, playerName]
+    );
+
+    if (deleteResult.rowCount === 0) {
+      return res.status(404).json({ error: "Player not found in room" });
+    }
+
+    console.log("✅ Player removed from room:", playerName);
+
+    // Check if room is now empty and delete it
+    const remainingPlayers = await pool.query(
+      "SELECT COUNT(*) FROM players WHERE room_id = $1",
+      [room.id]
+    );
+
+    if (parseInt(remainingPlayers.rows[0].count) === 0) {
+      await pool.query("DELETE FROM rooms WHERE id = $1", [room.id]);
+      console.log("🗑️ Room deleted (no players left):", roomCode);
+    }
+
+    res.json({
+      success: true,
+      message: "Left room successfully",
+    });
+  } catch (error) {
+    console.error("Error leaving room:", error);
+    res.status(500).json({ error: "Failed to leave room" });
+  }
+});
+
 module.exports = router;
