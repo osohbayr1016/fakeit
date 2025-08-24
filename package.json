@@ -5,7 +5,7 @@
   "main": "backend/index.js",
   "scripts": {
     "dev": "./start-dev.sh",
-    "start": "cd backend && node index.js",
+    "start": "node src/index.js",
     "start:backend": "cd backend && npm start",
     "build": "cd frontend && npm run build",
     "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
